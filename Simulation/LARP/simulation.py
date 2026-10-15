@@ -38,3 +38,6 @@ print(f"Pressure: {pressures[0,1]}")
 print(f"Volume Fraction: {volume_fractions[0,2]}")
 print(f"dt: {simulation.dt}")
 
+simulation.simulate(pressure_error_tolerance=1e-2)
+		
+
