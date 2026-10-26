@@ -5,7 +5,7 @@ from collections import deque
 import numpy as np
 import pygame
 
-from setup import Grid
+from solver import Grid
 
 # ---- Simulation settings: change these to suit your run ----
 NX = 20
