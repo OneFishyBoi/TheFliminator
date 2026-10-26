@@ -1,10 +1,8 @@
 import threading
 import time
-from collections import deque
-
 import numpy as np
 import pygame
-
+from collections import deque
 from solver import Grid
 
 # ---- Simulation settings: change these to suit your run ----
