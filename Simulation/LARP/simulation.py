@@ -30,14 +30,9 @@ velocities = simulation.get_velocities()
 pressures = simulation.get_pressures()
 volume_fractions = simulation.get_volume_fractions()
 
-simulation.dt = suggest_timestep(velocity=velocities,dx=dx,dy=dy,viscosity=viscosity)
-
-print(f"\nSuggested dt = {simulation.dt}")
 print(f"Velocity: {velocities[1,2]}")
 print(f"Pressure: {pressures[0,1]}")
-print(f"Volume Fraction: {volume_fractions[0,2]}")
+# print(f"Volume Fraction: {volume_fractions[0,2]}")
 print(f"dt: {simulation.dt}")
 
-# simulation.simulate(pressure_error_tolerance=1e-2)
-		
-simulation.simulate(pressure_error_tolerance=0.01)
+simulation.simulate(pressure_error_tolerance=1e-2)
