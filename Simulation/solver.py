@@ -1,6 +1,7 @@
 # import math
 import numpy as np
 from CellTypes import FluidCell
+from typing import Callable, Optional
 
 class Grid:
 
@@ -10,11 +11,12 @@ class Grid:
         v_star: np.ndarray,
         pressure: np.ndarray,
         pressure_error_tolerance: float = 1e-2,
-        query_check_value: int = 10
+        query_check_value: int = 10,
+        stop_requested: Optional[Callable[[], bool]] = None 
         ) -> np.ndarray:
 
         '''Method'''
-        # Ax = b // ∇²pⁿ⁺¹ = (ρ/Δt)∇·u*
+        # Ax = b <=> ∇²p = (ρ/Δt)∇·u*
         # A = D + L + U 
         # Loop pᵏ⁺¹ = D⁻¹[b - (L+U)pᵏ])
         ##################################
@@ -25,6 +27,7 @@ class Grid:
             (v_star[1:-1,2:] - v_star[1:-1,:-2]) / (2*self.dy)   # dv*dy
         )
         b = (self.density/self.dt) * div_u
+        b -= np.mean(b)
 
         # 2. Calculate D
         ax = 1 / self.dx**2
@@ -35,9 +38,12 @@ class Grid:
         pk = pressure.copy()
         pk1 = pressure.copy()
         k = 0
+        max_iterations = 10000
 
         while True: 
-
+            if stop_requested is not None and stop_requested():
+                break
+            
             # 4. Calculate (L+U)pᵏ
             LU_pk = (
                 ax * (pk[2:, 1:-1] + pk[:-2, 1:-1])  +  # ax * ( p_E + p_W )
@@ -57,24 +63,34 @@ class Grid:
             pk1[-1, -1] = pk1[-2, -2]
 
             # Optional pressure anti-drift  
-            # pk1 -= np.mean(pk1[1:-1, 1:-1]) 
+            pk1 -= np.mean(pk1[1:-1, 1:-1]) 
 
             # 6. Iterate & convergence check
             pk = pk1.copy()
 
             k += 1
-            if k % query_check_value == 0: 
+            if k % query_check_value == 0 or k == max_iterations:
                 d2p_dx2 = ( pk[2:,1:-1] - 2*pk[1:-1,1:-1] + pk[:-2,1:-1] ) / (self.dx**2)
                 d2p_dy2 = ( pk[1:-1,2:] - 2*pk[1:-1,1:-1] + pk[1:-1,:-2] ) / (self.dy**2)
                 lap_p = d2p_dx2 + d2p_dy2
 
                 r = lap_p - b
-                if np.max(np.abs(r)) < pressure_error_tolerance:
+                residual = float(np.max(np.abs(r)))
+                if residual < pressure_error_tolerance:
                     break
+                if k == max_iterations:
+                    raise RuntimeError(
+                        f"Pressure solver did not converge after {k} iterations "
+                        f"(residual {residual:.6g}, tolerance "
+                        f"{pressure_error_tolerance:.6g})."
+                    )
         return pk1
     
     def simulate(self,
-                 pressure_error_tolerance: float) -> None:
+                 pressure_error_tolerance: float,
+                 progress_callback: Optional[Callable[[float, np.ndarray, np.ndarray], None]] = None,
+                 stop_requested: Optional[Callable[[], bool]] = None
+                 ) -> None:
         
         t=0
         u = self.get_velocities(axis=0) # pretty sure this completely defeats the point of having a class, but whatever 
@@ -89,6 +105,8 @@ class Grid:
         v_star = v.copy()
 
         while t <= self.total_time:
+            if stop_requested is not None and stop_requested():
+                break
 
             # 1. Calculate advection terms
             u_dudx = u[1:-1,1:-1] * ( u[2:,1:-1] - u[:-2,1:-1] ) / (2*self.dx)
@@ -110,7 +128,9 @@ class Grid:
             v_star[1:-1,1:-1] = v[1:-1,1:-1] - self.dt * ( u_dvdx + v_dvdy - nu_lap_v - body_force_y )
 
             # 4. Solve Poisson pressure equation
-            p = self.solve_poisson(u_star=u_star, v_star=v_star, pressure=p, pressure_error_tolerance=pressure_error_tolerance)
+            p = self.solve_poisson(u_star=u_star, v_star=v_star, pressure=p, pressure_error_tolerance=pressure_error_tolerance, stop_requested=stop_requested)
+            if stop_requested is not None and stop_requested():
+                break
 
             # 5. Calculate pressure gradients
             dp_dx = ( p[2:,1:-1] - p[:-2,1:-1]) / (2*self.dx)
@@ -138,7 +158,10 @@ class Grid:
             #         self.cells[i,j].pressure = p[i,j]
 
             t += self.dt
-        print("done")
+            if progress_callback is not None:
+                velocities = np.stack((u, v), axis=-1)
+                progress_callback(float(t), p.copy(), velocities.copy())
+        print("Simulation stopped." if stop_requested is not None and stop_requested() else "Simulation done.")
         pass
 
     def get_velocities(self, 
@@ -156,7 +179,7 @@ class Grid:
 
     def boundary(self, u: np.ndarray, v: np.ndarray): # this is bad... but works for now
         u[:,0] = 0.0 # Bottom wall
-        u[:,-1] = +1 # Top wall
+        u[:,-1] = +1.0 # Top wall
         u[0,:] = 0.0 # Left wall
         u[-1,:] = 0.0 # Right wall
 
@@ -178,7 +201,7 @@ class Grid:
                      initial_velocity: np.ndarray,
                      initial_pressure: float,
                      initial_volume_fraction: float,
-                     body_force: np.ndarray = np.zeros((3,3,2)) # TEMPORARY
+                     body_force: np.ndarray = np.zeros((3,3,2)), # TEMPORARY
                     ) -> None:
             
             self.density = density
