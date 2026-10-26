@@ -43,11 +43,13 @@ PARAMETER_FIELDS = (
     ("body_force_x", "Body force X", float),
     ("body_force_y", "Body force Y", float),
 )
-BACKGROUND = (24, 27, 33)
-PANEL = (35, 39, 47)
-TEXT = (230, 233, 238)
-MUTED = (160, 168, 180)
-ACCENT = (80, 170, 245)
+BACKGROUND = (10, 16, 28)
+PANEL = (17, 26, 42)
+PANEL_RAISED = (23, 35, 54)
+TEXT = (231, 239, 249)
+MUTED = (139, 157, 180)
+ACCENT = (64, 210, 193)
+ACCENT_BLUE = (74, 169, 255)
 
 
 def pressure_to_surface(pressure, size):
@@ -72,13 +74,11 @@ def pressure_to_surface(pressure, size):
     neg = z < 0
     pos = ~neg
     a = np.abs(z)
-    # Blue -> white for negative values; white -> red for positive values.
-    rgb[neg, 0] = (255 * (1 - a[neg])).astype(np.uint8)
-    rgb[neg, 1] = (255 * (1 - a[neg])).astype(np.uint8)
-    rgb[neg, 2] = 255
-    rgb[pos, 0] = 255
-    rgb[pos, 1] = (255 * (1 - a[pos])).astype(np.uint8)
-    rgb[pos, 2] = (255 * (1 - a[pos])).astype(np.uint8)
+    neutral = np.array((13, 25, 43), dtype=float)
+    cool = np.array((42, 190, 232), dtype=float)
+    warm = np.array((255, 112, 91), dtype=float)
+    rgb[neg] = (neutral + a[neg][:, None] * (cool - neutral)).astype(np.uint8)
+    rgb[pos] = (neutral + a[pos][:, None] * (warm - neutral)).astype(np.uint8)
     surf = pygame.surfarray.make_surface(rgb)
     return pygame.transform.smoothscale(surf, size)
 
@@ -89,9 +89,9 @@ class CFDViewer:
         pygame.display.set_caption("TheFliminator — CFD viewer")
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("consolas", 18)
-        self.small = pygame.font.SysFont("consolas", 15)
-        self.title_font = pygame.font.SysFont("consolas", 23, bold=True)
+        self.font = pygame.font.SysFont("segoeui", 17)
+        self.small = pygame.font.SysFont("segoeui", 14)
+        self.title_font = pygame.font.SysFont("segoeui", 23, bold=True)
 
         self.parameters = {
             "nx": NX,
@@ -212,11 +212,16 @@ class CFDViewer:
         img = (font or self.font).render(str(value), True, colour)
         self.screen.blit(img, (x, y))
 
-    def button(self, rect, label, enabled=True):
-        colour = (58, 65, 77) if enabled else (47, 50, 57)
-        pygame.draw.rect(self.screen, colour, rect, border_radius=6)
-        pygame.draw.rect(self.screen, (82, 91, 106), rect, width=1, border_radius=6)
-        surf = self.font.render(label, True, TEXT if enabled else MUTED)
+    def button(self, rect, label, enabled=True, primary=False):
+        if primary and enabled:
+            colour, border, text_colour = (35, 157, 146), (73, 218, 199), (8, 25, 35)
+        else:
+            colour = PANEL_RAISED if enabled else (27, 34, 47)
+            border = (48, 66, 88) if enabled else (39, 47, 60)
+            text_colour = TEXT if enabled else MUTED
+        pygame.draw.rect(self.screen, colour, rect, border_radius=8)
+        pygame.draw.rect(self.screen, border, rect, width=1, border_radius=8)
+        surf = self.font.render(label, True, text_colour)
         self.screen.blit(surf, surf.get_rect(center=rect.center))
 
     def open_settings(self):
@@ -333,7 +338,7 @@ class CFDViewer:
             self.text(self.parameter_error, panel.left + 20, panel.bottom - 68,
                       (255, 130, 120), self.small)
         self.button(pygame.Rect(panel.right - 226, panel.bottom - 48, 96, 34), "Cancel")
-        self.button(pygame.Rect(panel.right - 116, panel.bottom - 48, 96, 34), "Save")
+        self.button(pygame.Rect(panel.right - 116, panel.bottom - 48, 96, 34), "Save", primary=True)
         self.settings_panel = panel
         self.settings_rows = (row_top, row_bottom, row_height, visible_rows)
 
@@ -361,7 +366,8 @@ class CFDViewer:
                 dy = -vy / speed * length
                 start = (int(x - dx * 0.45), int(y - dy * 0.45))
                 end = (int(x + dx * 0.55), int(y + dy * 0.55))
-                pygame.draw.line(self.screen, (22, 25, 30), start, end, 2)
+                pygame.draw.line(self.screen, (8, 19, 31), start, end, 4)
+                pygame.draw.line(self.screen, (184, 246, 239), start, end, 2)
                 # Arrow head
                 angle = np.arctan2(end[1] - start[1], end[0] - start[0])
                 head = 5
@@ -369,40 +375,62 @@ class CFDViewer:
                       end[1] - head * np.sin(angle - 0.55))
                 p2 = (end[0] - head * np.cos(angle + 0.55),
                       end[1] - head * np.sin(angle + 0.55))
-                pygame.draw.polygon(self.screen, (22, 25, 30), [end, p1, p2])
+                pygame.draw.polygon(self.screen, (8, 19, 31), [end, p1, p2])
+                p1 = (end[0] - (head - 1) * np.cos(angle - 0.55),
+                      end[1] - (head - 1) * np.sin(angle - 0.55))
+                p2 = (end[0] - (head - 1) * np.cos(angle + 0.55),
+                      end[1] - (head - 1) * np.sin(angle + 0.55))
+                pygame.draw.polygon(self.screen, (184, 246, 239), [end, p1, p2])
 
     def draw(self):
         self.screen.fill(BACKGROUND)
         w, h = self.screen.get_size()
         pygame.draw.rect(self.screen, PANEL, (0, 0, PANEL_W, h))
-        self.text("TheFliminator", 18, 17, font=self.title_font)
-        self.text("2D incompressible flow", 18, 47, MUTED, self.small)
+        pygame.draw.line(self.screen, (35, 51, 73), (PANEL_W - 1, 0), (PANEL_W - 1, h), 1)
+        pygame.draw.rect(self.screen, ACCENT, (18, 20, 34, 34), border_radius=10)
+        pygame.draw.circle(self.screen, (8, 48, 58), (35, 37), 8, 2)
+        pygame.draw.circle(self.screen, (8, 48, 58), (35, 37), 3)
+        self.text("TheFliminator", 62, 17, font=self.title_font)
+        self.text("FLOW LAB  /  2D SOLVER", 63, 47, MUTED, self.small)
 
-        self.button(pygame.Rect(18, 88, 100, 36), "Start", not self.running)
+        self.button(pygame.Rect(18, 88, 100, 36), "Run", not self.running, primary=True)
         self.button(pygame.Rect(130, 88, 100, 36), "Stop", self.running)
-        self.text(f"Status: {self.status}", 18, 139, ACCENT, self.small)
-        self.text(f"t = {self.sim_time:.4f} s", 18, 166)
-        self.text(f"Saved frames: {len(self.frames)}", 18, 192, MUTED, self.small)
+        status_colour = ACCENT if self.running else ACCENT_BLUE if self.finished else MUTED
+        pygame.draw.rect(self.screen, PANEL_RAISED, (18, 137, PANEL_W - 36, 27), border_radius=7)
+        pygame.draw.circle(self.screen, status_colour, (31, 150), 4)
+        self.text(self.status, 42, 140, status_colour, self.small)
+        self.text(f"{self.sim_time:.4f}", 18, 172, font=self.title_font)
+        self.text("SIMULATION TIME  /  SECONDS", 18, 202, MUTED, self.small)
+        self.text(f"{len(self.frames):,}  frames captured", 18, 227, MUTED, self.small)
 
-        self.button(pygame.Rect(18, 210, PANEL_W - 36, 34), "Initial parameters", not self.running)
-        pygame.draw.line(self.screen, (70, 76, 87), (18, 258), (PANEL_W - 18, 258), 1)
-        self.text("Display", 18, 273, font=self.title_font)
-        self.text("[P] Pressure map", 18, 310, TEXT if self.show_pressure else MUTED)
-        self.text("[V] Velocity arrows", 18, 339, TEXT if self.show_arrows else MUTED)
-        self.text("[N] Normalise arrow lengths", 18, 368, TEXT if self.normalise_arrows else MUTED)
-        self.text("Click text to toggle", 18, 391, MUTED, self.small)
+        self.button(pygame.Rect(18, 258, PANEL_W - 36, 36), "Initial parameters", not self.running)
+        pygame.draw.line(self.screen, (35, 51, 73), (18, 311), (PANEL_W - 18, 311), 1)
+        self.text("VISUALISATION", 18, 326, MUTED, self.small)
+        for row_y, label, key, enabled in (
+            (352, "Pressure field", "P", self.show_pressure),
+            (384, "Velocity vectors", "V", self.show_arrows),
+            (416, "Normalise vector length", "N", self.normalise_arrows),
+        ):
+            row = pygame.Rect(14, row_y - 4, PANEL_W - 28, 29)
+            if enabled:
+                pygame.draw.rect(self.screen, PANEL_RAISED, row, border_radius=6)
+            pygame.draw.circle(self.screen, ACCENT if enabled else (59, 73, 91),
+                               (27, row.centery), 4)
+            self.text(label, 39, row_y, TEXT if enabled else MUTED, self.small)
+            key_surface = self.small.render(key, True, MUTED)
+            self.screen.blit(key_surface, (PANEL_W - 31, row_y))
 
-        pygame.draw.line(self.screen, (70, 76, 87), (18, 425), (PANEL_W - 18, 425), 1)
-        self.text("Replay", 18, 441, font=self.title_font)
-        self.button(pygame.Rect(18, 481, 100, 34), "Play" if not self.playing else "Pause",
+        pygame.draw.line(self.screen, (35, 51, 73), (18, 458), (PANEL_W - 18, 458), 1)
+        self.text("FRAME REPLAY", 18, 474, MUTED, self.small)
+        self.button(pygame.Rect(18, 506, 100, 34), "Pause" if self.playing else "Play",
                     bool(self.frames))
-        self.button(pygame.Rect(130, 481, 100, 34), "Live")
-        self.text("← / → step frame", 18, 526, MUTED, self.small)
-        self.text("Drag slider below plot", 18, 548, MUTED, self.small)
-        self.button(pygame.Rect(18, 570, 38, 30), "-")
+        self.button(pygame.Rect(130, 506, 100, 34), "Live")
+        self.text("← / →  step frame", 18, 550, MUTED, self.small)
+        self.text("PLAYBACK SPEED", 18, 577, MUTED, self.small)
+        self.button(pygame.Rect(18, 602, 38, 30), "−")
         fps_label = self.small.render(f"{self.replay_fps} FPS", True, TEXT)
-        self.screen.blit(fps_label, fps_label.get_rect(center=(PANEL_W // 2, 585)))
-        self.button(pygame.Rect(PANEL_W - 56, 570, 38, 30), "+")
+        self.screen.blit(fps_label, fps_label.get_rect(center=(PANEL_W // 2, 617)))
+        self.button(pygame.Rect(PANEL_W - 56, 602, 38, 30), "+")
 
         rect = self.plot_rect()
         with self.lock:
@@ -416,21 +444,41 @@ class CFDViewer:
             surf = pressure_to_surface(p, rect.size)
             self.screen.blit(surf, rect.topleft)
         else:
-            self.screen.fill((245, 245, 245), rect)
-        pygame.draw.rect(self.screen, (110, 118, 130), rect, width=1)
+            self.screen.fill(PANEL_RAISED, rect)
+        nx, ny = p.shape
+        if max(nx, ny) <= 48 and self.show_pressure:
+            mesh = pygame.Surface(rect.size, pygame.SRCALPHA)
+            for i in range(1, nx):
+                x = round(i * rect.width / nx)
+                pygame.draw.line(mesh, (224, 242, 255, 17), (x, 0), (x, rect.height), 1)
+            for j in range(1, ny):
+                y = round(j * rect.height / ny)
+                pygame.draw.line(mesh, (224, 242, 255, 17), (0, y), (rect.width, y), 1)
+            self.screen.blit(mesh, rect.topleft)
+        pygame.draw.rect(self.screen, (55, 79, 105), rect, width=1, border_radius=4)
         if self.show_arrows:
             self.draw_arrows(rect, vel)
-        self.text(f"Pressure + velocity  |  t={current_t:.4f}s", rect.left, 27, MUTED, self.small)
+        self.text("PRESSURE FIELD", rect.left, 27, TEXT, self.small)
+        pygame.draw.circle(self.screen, ACCENT, (rect.left + 145, 35), 3)
+        self.text("VELOCITY", rect.left + 155, 27, MUTED, self.small)
+        self.text(f"t = {current_t:.4f} s", rect.right - 110, 27, MUTED, self.small)
 
         # Timeline is draggable for replay.
-        timeline = pygame.Rect(rect.left, h - 42, rect.width, 12)
-        pygame.draw.rect(self.screen, (70, 76, 87), timeline, border_radius=5)
+        timeline = pygame.Rect(rect.left, h - 41, rect.width, 6)
+        pygame.draw.rect(self.screen, PANEL_RAISED, timeline, border_radius=4)
+        if len(frames) > 1:
+            progress = self.frame_index / (len(frames) - 1)
+            progress_rect = pygame.Rect(timeline.left, timeline.top,
+                                        int(timeline.width * progress), timeline.height)
+            pygame.draw.rect(self.screen, ACCENT, progress_rect, border_radius=4)
         if len(frames) > 1:
             frac = self.frame_index / (len(frames) - 1)
             marker_x = timeline.left + int(frac * timeline.width)
-            pygame.draw.circle(self.screen, ACCENT, (marker_x, timeline.centery), 7)
+            pygame.draw.circle(self.screen, TEXT, (marker_x, timeline.centery), 6)
+            pygame.draw.circle(self.screen, ACCENT, (marker_x, timeline.centery), 3)
         else:
-            pygame.draw.circle(self.screen, ACCENT, (timeline.left, timeline.centery), 7)
+            pygame.draw.circle(self.screen, TEXT, (timeline.left, timeline.centery), 6)
+            pygame.draw.circle(self.screen, ACCENT, (timeline.left, timeline.centery), 3)
         self.timeline_rect = timeline
         if self.show_settings:
             self.draw_settings()
@@ -466,24 +514,24 @@ class CFDViewer:
             self.start()
         elif pygame.Rect(130, 88, 100, 36).collidepoint(pos):
             self.stop()
-        elif pygame.Rect(18, 210, PANEL_W - 36, 34).collidepoint(pos):
+        elif pygame.Rect(18, 258, PANEL_W - 36, 36).collidepoint(pos):
             self.open_settings()
-        elif 306 <= y <= 331 and x < PANEL_W:
+        elif 348 <= y <= 377 and x < PANEL_W:
             self.show_pressure = not self.show_pressure
-        elif 333 <= y <= 359 and x < PANEL_W:
+        elif 380 <= y <= 409 and x < PANEL_W:
             self.show_arrows = not self.show_arrows
-        elif 362 <= y <= 388 and x < PANEL_W:
+        elif 412 <= y <= 441 and x < PANEL_W:
             self.normalise_arrows = not self.normalise_arrows
-        elif pygame.Rect(18, 481, 100, 34).collidepoint(pos):
+        elif pygame.Rect(18, 506, 100, 34).collidepoint(pos):
             if self.frames:
                 self.playing = not self.playing
                 self.last_frame_time = time.time()
-        elif pygame.Rect(130, 481, 100, 34).collidepoint(pos):
+        elif pygame.Rect(130, 506, 100, 34).collidepoint(pos):
             self.playing = False
             self.frame_index = max(0, len(self.frames) - 1)
-        elif pygame.Rect(18, 570, 38, 30).collidepoint(pos):
+        elif pygame.Rect(18, 602, 38, 30).collidepoint(pos):
             self.change_replay_fps(-1)
-        elif pygame.Rect(PANEL_W - 56, 570, 38, 30).collidepoint(pos):
+        elif pygame.Rect(PANEL_W - 56, 602, 38, 30).collidepoint(pos):
             self.change_replay_fps(1)
         elif hasattr(self, "timeline_rect") and self.timeline_rect.inflate(0, 20).collidepoint(pos):
             self.playing = False
