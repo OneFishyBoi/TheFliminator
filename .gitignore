@@ -2,4 +2,3 @@ __pycache__/
 *.py[cod]
 .vscode/settings.json
 Simulation/simulation.py
-Source/main.py
