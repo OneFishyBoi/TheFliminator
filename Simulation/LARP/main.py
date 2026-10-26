@@ -52,33 +52,41 @@ ACCENT = (64, 210, 193)
 ACCENT_BLUE = (74, 169, 255)
 
 
-def pressure_to_surface(pressure, size):
-    """Blue-white-red pressure map, scaled robustly around its mean."""
-    p = np.asarray(pressure, dtype=float)
-    finite = np.isfinite(p)
-    if not finite.any():
-        p = np.zeros_like(p)
-    else:
-        fill = float(np.mean(p[finite]))
-        p = np.where(finite, p, fill)
-    p = p - np.mean(p)
-    scale = float(np.max(np.abs(p)))
-    if scale > 0:
-        z = np.clip(p / scale, -1.0, 1.0)
-    else:
-        z = np.zeros_like(p)
+def rgb_field_to_surface(velocity, pressure, size):
+    """Encode speed as cyan and signed, mean-relative pressure as orange or violet."""
+    speed = np.hypot(velocity[..., 0], velocity[..., 1])
+    pressure = np.asarray(pressure, dtype=float)
+    finite_pressure = np.isfinite(pressure)
+    pressure_mean = float(np.mean(pressure[finite_pressure])) if finite_pressure.any() else 0.0
+    fields = (
+        (speed, np.array((20, 235, 255), dtype=float), None),
+        (
+            pressure - pressure_mean,
+            np.array((255, 91, 28), dtype=float),
+            np.array((177, 55, 255), dtype=float),
+        ),
+    )
+    rgb = np.zeros((*fields[0][0].shape, 3), dtype=float)
+    for field, positive, negative in fields:
+        finite = np.isfinite(field)
+        if finite.any():
+            fill = float(np.mean(field[finite]))
+            values = np.where(finite, field, fill)
+        else:
+            values = np.zeros_like(field)
+        scale = float(np.percentile(np.abs(values), 99))
+        if scale > 0:
+            intensity = np.clip(np.abs(values) / scale, 0.0, 1.0) ** 0.65
+            if negative is None:
+                colour = positive
+            else:
+                colour = np.where((values >= 0)[..., None], positive, negative)
+            rgb += np.flip((intensity[..., None] * colour), axis=1)
 
-    # Convert grid's (x,y) indexing to screen image coordinates.
-    z = np.flipud(z.T)
-    rgb = np.empty((*z.shape, 3), dtype=np.uint8)
-    neg = z < 0
-    pos = ~neg
-    a = np.abs(z)
-    neutral = np.array((13, 25, 43), dtype=float)
-    cool = np.array((42, 190, 232), dtype=float)
-    warm = np.array((255, 112, 91), dtype=float)
-    rgb[neg] = (neutral + a[neg][:, None] * (cool - neutral)).astype(np.uint8)
-    rgb[pos] = (neutral + a[pos][:, None] * (warm - neutral)).astype(np.uint8)
+    # Preserve vivid hues when several fields overlap instead of clipping them to white.
+    peak = np.max(rgb, axis=2, keepdims=True)
+    rgb = np.divide(rgb, np.maximum(peak, 1.0), out=np.zeros_like(rgb))
+    rgb = (rgb * 235 + (5, 8, 18)).clip(0, 255).astype(np.uint8)
     surf = pygame.surfarray.make_surface(rgb)
     return pygame.transform.smoothscale(surf, size)
 
@@ -122,7 +130,7 @@ class CFDViewer:
         self.pressure = self.grid.get_pressures().copy()
         self.velocity = self.grid.get_velocities().copy()
         self.normalise_arrows = True
-        self.show_pressure = True
+        self.show_rgb = True
         self.show_arrows = True
         self.playing = False
         self.frame_index = 0
@@ -349,9 +357,8 @@ class CFDViewer:
     def draw_arrows(self, rect, velocity):
         nx, ny, _ = velocity.shape
         stride = max(1, max(nx, ny) // 22)
-        # Keep arrows legible while sampling the field.
-        for i in range(1 + stride // 2, nx - 1, stride):
-            for j in range(1 + stride // 2, ny - 1, stride):
+        for i in range(stride // 2, nx, stride):
+            for j in range(stride // 2, ny, stride):
                 ux, vy = velocity[i, j]
                 speed = float(np.hypot(ux, vy))
                 if speed < 1e-12:
@@ -382,6 +389,106 @@ class CFDViewer:
                       end[1] - (head - 1) * np.sin(angle + 0.55))
                 pygame.draw.polygon(self.screen, (184, 246, 239), [end, p1, p2])
 
+    def draw_walls(self, rect, nx, ny):
+        x_edges = [round(rect.left + i * rect.width / nx) for i in range(nx + 1)]
+        y_edges = [round(rect.top + j * rect.height / ny) for j in range(ny + 1)]
+        left = pygame.Rect(x_edges[0], rect.top, x_edges[1] - x_edges[0], rect.height)
+        right = pygame.Rect(x_edges[-2], rect.top, x_edges[-1] - x_edges[-2], rect.height)
+        bottom = pygame.Rect(x_edges[1], y_edges[-2],
+                             x_edges[-2] - x_edges[1], y_edges[-1] - y_edges[-2])
+        pygame.draw.rect(self.screen, (43, 61, 85), left)
+        pygame.draw.rect(self.screen, (43, 61, 85), right)
+        pygame.draw.rect(self.screen, (43, 61, 85), bottom)
+
+        def shade_wall(wall_rect, horizontal, reverse=False):
+            span = wall_rect.width if horizontal else wall_rect.height
+            for offset in range(span):
+                fraction = offset / max(1, span - 1)
+                if reverse:
+                    fraction = 1 - fraction
+                shade = int(29 + 27 * fraction)
+                colour = (shade, shade + 14, shade + 33)
+                if horizontal:
+                    pygame.draw.line(self.screen, colour,
+                                     (wall_rect.left + offset, wall_rect.top),
+                                     (wall_rect.left + offset, wall_rect.bottom - 1))
+                else:
+                    pygame.draw.line(self.screen, colour,
+                                     (wall_rect.left, wall_rect.top + offset),
+                                     (wall_rect.right - 1, wall_rect.top + offset))
+
+        shade_wall(left, True)
+        shade_wall(right, True, reverse=True)
+        shade_wall(bottom, False)
+        pygame.draw.line(self.screen, (164, 197, 224),
+                         (left.right - 1, left.top), (left.right - 1, left.bottom - 1), 2)
+        pygame.draw.line(self.screen, (164, 197, 224),
+                         (right.left, right.top), (right.left, right.bottom - 1), 2)
+        pygame.draw.line(self.screen, (164, 197, 224),
+                         (bottom.left, bottom.top), (bottom.right - 1, bottom.top), 2)
+        pygame.draw.line(self.screen, (20, 32, 49),
+                         (left.left, left.top), (left.left, left.bottom - 1), 2)
+        pygame.draw.line(self.screen, (20, 32, 49),
+                         (right.right - 1, right.top), (right.right - 1, right.bottom - 1), 2)
+        pygame.draw.line(self.screen, (20, 32, 49),
+                         (bottom.left, bottom.bottom - 1), (bottom.right - 1, bottom.bottom - 1), 2)
+
+        for edge in y_edges[1:-1]:
+            pygame.draw.line(self.screen, (35, 49, 69),
+                             (left.left, edge), (left.right - 1, edge), 1)
+            pygame.draw.line(self.screen, (35, 49, 69),
+                             (right.left, edge), (right.right - 1, edge), 1)
+        for edge in x_edges[1:-1]:
+            pygame.draw.line(self.screen, (35, 49, 69),
+                             (edge, bottom.top), (edge, bottom.bottom - 1), 1)
+        for y0, y1 in zip(y_edges[:-1], y_edges[1:]):
+            center_y = (y0 + y1) // 2
+            for wall_rect in (left, right):
+                center_x = wall_rect.centerx
+                pygame.draw.circle(self.screen, (20, 32, 49),
+                                   (center_x, center_y), 3)
+                pygame.draw.circle(self.screen, (153, 184, 211),
+                                   (center_x - 1, center_y - 1), 1)
+        for x0, x1 in zip(x_edges[1:-2], x_edges[2:-1]):
+            center_x = (x0 + x1) // 2
+            pygame.draw.circle(self.screen, (20, 32, 49),
+                               (center_x, bottom.centery), 3)
+            pygame.draw.circle(self.screen, (153, 184, 211),
+                               (center_x - 1, bottom.centery - 1), 1)
+
+        lid_rect = pygame.Rect(x_edges[1], rect.top,
+                               x_edges[-2] - x_edges[1], y_edges[1] - y_edges[0])
+        pygame.draw.rect(self.screen, (17, 103, 103), lid_rect)
+        for offset in range(lid_rect.height):
+            fraction = offset / max(1, lid_rect.height - 1)
+            colour = (int(38 - 14 * fraction), int(207 - 65 * fraction),
+                      int(184 - 47 * fraction))
+            pygame.draw.line(self.screen, colour,
+                             (lid_rect.left, lid_rect.top + offset),
+                             (lid_rect.right - 1, lid_rect.top + offset))
+        pygame.draw.line(self.screen, (184, 255, 233),
+                         (lid_rect.left, lid_rect.top),
+                         (lid_rect.right - 1, lid_rect.top), 2)
+        pygame.draw.line(self.screen, (12, 88, 89),
+                         (lid_rect.left, lid_rect.bottom - 1),
+                         (lid_rect.right - 1, lid_rect.bottom - 1), 2)
+        for edge in x_edges[2:-2]:
+            pygame.draw.line(self.screen, (32, 151, 139),
+                             (edge, lid_rect.top + 3), (edge, lid_rect.bottom - 3), 1)
+
+        arrow_y = lid_rect.centery
+        arrow_spacing = max(18, min(48, lid_rect.width // 12))
+        for arrow_x in range(lid_rect.left + 9, lid_rect.right - 12, arrow_spacing):
+            tip = (arrow_x + 10, arrow_y)
+            pygame.draw.line(self.screen, (12, 79, 77),
+                             (arrow_x, arrow_y), tip, 4)
+            pygame.draw.line(self.screen, (235, 255, 246),
+                             (arrow_x, arrow_y), tip, 2)
+            pygame.draw.line(self.screen, (235, 255, 246),
+                             (arrow_x + 5, arrow_y - 4), tip, 2)
+            pygame.draw.line(self.screen, (235, 255, 246),
+                             (arrow_x + 5, arrow_y + 4), tip, 2)
+
     def draw(self):
         self.screen.fill(BACKGROUND)
         w, h = self.screen.get_size()
@@ -407,7 +514,7 @@ class CFDViewer:
         pygame.draw.line(self.screen, (35, 51, 73), (18, 311), (PANEL_W - 18, 311), 1)
         self.text("VISUALISATION", 18, 326, MUTED, self.small)
         for row_y, label, key, enabled in (
-            (352, "Pressure field", "P", self.show_pressure),
+            (352, "RGB speed + pressure", "P", self.show_rgb),
             (384, "Velocity vectors", "V", self.show_arrows),
             (416, "Normalise vector length", "N", self.normalise_arrows),
         ):
@@ -440,28 +547,48 @@ class CFDViewer:
             frames = list(self.frames)
         if frames and not self.running and 0 <= self.frame_index < len(frames):
             current_t, p, vel = frames[self.frame_index]
-        if self.show_pressure:
-            surf = pressure_to_surface(p, rect.size)
-            self.screen.blit(surf, rect.topleft)
-        else:
-            self.screen.fill(PANEL_RAISED, rect)
         nx, ny = p.shape
-        if max(nx, ny) <= 48 and self.show_pressure:
-            mesh = pygame.Surface(rect.size, pygame.SRCALPHA)
-            for i in range(1, nx):
-                x = round(i * rect.width / nx)
-                pygame.draw.line(mesh, (224, 242, 255, 17), (x, 0), (x, rect.height), 1)
-            for j in range(1, ny):
-                y = round(j * rect.height / ny)
-                pygame.draw.line(mesh, (224, 242, 255, 17), (0, y), (rect.width, y), 1)
-            self.screen.blit(mesh, rect.topleft)
-        pygame.draw.rect(self.screen, (55, 79, 105), rect, width=1, border_radius=4)
+        x_edges = [round(rect.left + i * rect.width / nx) for i in range(nx + 1)]
+        y_edges = [round(rect.top + j * rect.height / ny) for j in range(ny + 1)]
+        field_rect = pygame.Rect(
+            x_edges[1], y_edges[1],
+            x_edges[-2] - x_edges[1], y_edges[-2] - y_edges[1],
+        )
+        interior_pressure = p[1:-1, 1:-1]
+        interior_velocity = vel[1:-1, 1:-1]
+        if self.show_rgb:
+            surf = rgb_field_to_surface(interior_velocity, interior_pressure, field_rect.size)
+            self.screen.blit(surf, field_rect.topleft)
+        else:
+            self.screen.fill(PANEL_RAISED, field_rect)
+        if max(nx, ny) <= 48 and self.show_rgb:
+            mesh = pygame.Surface(field_rect.size, pygame.SRCALPHA)
+            for i in range(1, nx - 2):
+                x = round(i * field_rect.width / (nx - 2))
+                pygame.draw.line(mesh, (224, 242, 255, 17), (x, 0), (x, field_rect.height), 1)
+            for j in range(1, ny - 2):
+                y = round(j * field_rect.height / (ny - 2))
+                pygame.draw.line(mesh, (224, 242, 255, 17), (0, y), (field_rect.width, y), 1)
+            self.screen.blit(mesh, field_rect.topleft)
+        self.draw_walls(rect, nx, ny)
         if self.show_arrows:
-            self.draw_arrows(rect, vel)
-        self.text("PRESSURE FIELD", rect.left, 27, TEXT, self.small)
-        pygame.draw.circle(self.screen, ACCENT, (rect.left + 145, 35), 3)
-        self.text("VELOCITY", rect.left + 155, 27, MUTED, self.small)
+            self.draw_arrows(field_rect, interior_velocity)
+        self.text("SPEED + PRESSURE", rect.left, 27, TEXT, self.small)
+        legend_x = rect.left + 185
+        for label, positive, negative in (
+            ("speed", (20, 235, 255), None),
+            ("p", (255, 91, 28), (177, 55, 255)),
+        ):
+            pygame.draw.rect(self.screen, positive, (legend_x, 29, 5, 10), border_radius=2)
+            if negative is not None:
+                pygame.draw.rect(self.screen, negative,
+                                 (legend_x + 6, 29, 5, 10), border_radius=2)
+            self.text(label, legend_x + (15 if negative is not None else 9),
+                      27, MUTED, self.small)
+            legend_x += 62 if negative is not None else 55
         self.text(f"t = {current_t:.4f} s", rect.right - 110, 27, MUTED, self.small)
+        self.text("Speed: cyan  ·  pressure: orange (+) / violet (−)  ·  99th percentile contrast",
+                  rect.left, 45, MUTED, self.small)
 
         # Timeline is draggable for replay.
         timeline = pygame.Rect(rect.left, h - 41, rect.width, 6)
@@ -517,7 +644,7 @@ class CFDViewer:
         elif pygame.Rect(18, 258, PANEL_W - 36, 36).collidepoint(pos):
             self.open_settings()
         elif 348 <= y <= 377 and x < PANEL_W:
-            self.show_pressure = not self.show_pressure
+            self.show_rgb = not self.show_rgb
         elif 380 <= y <= 409 and x < PANEL_W:
             self.show_arrows = not self.show_arrows
         elif 412 <= y <= 441 and x < PANEL_W:
@@ -598,7 +725,7 @@ class CFDViewer:
                     elif event.key == pygame.K_SPACE:
                         self.playing = not self.playing if self.frames else False
                     elif event.key == pygame.K_p:
-                        self.show_pressure = not self.show_pressure
+                        self.show_rgb = not self.show_rgb
                     elif event.key == pygame.K_v:
                         self.show_arrows = not self.show_arrows
                     elif event.key == pygame.K_n:
